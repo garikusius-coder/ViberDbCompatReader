@@ -63,7 +63,7 @@ jobs:
             'Qt6Core.lib',
             'Qt6Sql.lib'
           )
-          & cl.exe /nologo /std:c++17 /EHsc /O2 /MD /DUNICODE /D_UNICODE /DQT_NO_DEBUG @includes `
+          & cl.exe /nologo /std:c++17 /Zc:__cplusplus /EHsc /O2 /MD /DUNICODE /D_UNICODE /DQT_NO_DEBUG @includes `
             '.\V5_ViberDbCompatQtReader_v5.0.cpp' `
             /Fe:'.\V5_ViberDbCompatQtReader_v5.0.exe' `
             /link /SUBSYSTEM:CONSOLE @libs
