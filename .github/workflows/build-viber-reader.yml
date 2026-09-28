@@ -51,7 +51,7 @@ jobs:
           if(-not$qt-or-not(Test-Path $qt)){throw 'QT_ROOT_DIR_MISSING'}
           $includes=@("/I$qt\include","/I$qt\include\QtCore","/I$qt\include\QtSql")
           $libs=@("/LIBPATH:$qt\lib",'Qt6Core.lib','Qt6Sql.lib')
-          & cl.exe /nologo /std:c++17 /EHsc /O2 /MD /DUNICODE /D_UNICODE /DQT_NO_DEBUG @includes '.\V5_ViberDbCompatQtReader_v5.0.cpp' /Fe:'.\V5_ViberDbCompatQtReader_v5.0.exe' /link /SUBSYSTEM:CONSOLE @libs
+          & cl.exe /nologo /std:c++17 /Zc:__cplusplus /permissive- /EHsc /O2 /MD /DUNICODE /D_UNICODE /DQT_NO_DEBUG @includes '.\V5_ViberDbCompatQtReader_v5.0.cpp' /Fe:'.\V5_ViberDbCompatQtReader_v5.0.exe' /link /SUBSYSTEM:CONSOLE @libs
           if($LASTEXITCODE-ne0){throw "CL_FAILED_$LASTEXITCODE"}
           if(-not(Test-Path '.\V5_ViberDbCompatQtReader_v5.0.exe')){throw 'EXE_NOT_CREATED'}
       - name: Verify Windows x64 and dynamic Qt imports
