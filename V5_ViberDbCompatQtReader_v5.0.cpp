@@ -1,18 +1,17 @@
 // Viber AI Manager v5.0 CLEAN
 // Module: V5_ViberDbCompatQtReader
-// Version: 5.0.1-prototype
-// Task: V5-040 Fix 1
+// Version: 5.0.2-prototype
+// Task: V5-040 Fix 7
 // Mode: PROBE_ONLY_ISOLATED_READ_ONLY_CODEC_READER
 //
-// Static prototype only. CHAT2 does not compile/run it against live Viber.
-// Input: one JSON object on stdin. Key/db/plugin paths never appear in argv.
-// Output: privacy-safe JSON only; never echoes key, db path, plugin path, SQL error text, phone, ChatID or EventID.
+// Input: one JSON object on stdin. Paths and optional key material never appear in argv.
+// Output: privacy-safe JSON only; never echoes key, DB/plugin paths, SQL error text, phone, ChatID or EventID.
 //
 // Safety:
-// - Only PROBE mode is accepted in Fix 1. DIRECT_CHAT is intentionally unavailable until CHAT1 confirms CODEC_READ_PASS.
+// - KEYLESS_PROBE is the Fix 7 path and uses no key material.
+// - Legacy PROBE remains available only for a future explicitly approved in-memory key source; Fix 7 launcher never calls it.
 // - QSQLITE_OPEN_READONLY + bounded busy timeout + PRAGMA query_only=ON.
-// - Runtime PRAGMA hexkey is supplied from stdin memory only.
-// - No INSERT/UPDATE/DELETE/DDL/ATTACH/VACUUM/rekey/history/send/network/file output/AUTO.
+// - No INSERT/UPDATE/DELETE/DDL/ATTACH/VACUUM/rekey/history/send/network/file output/AUTO/DIRECT_CHAT.
 
 #include <QCoreApplication>
 #include <QJsonDocument>
@@ -34,6 +33,7 @@ static QJsonObject baseResult(const QString &result)
     o["sendInvoked"] = false;
     o["keyLogged"] = false;
     o["keyPersisted"] = false;
+    o["keyMaterialUsed"] = false;
     return o;
 }
 
@@ -48,6 +48,17 @@ static bool execControlPragma(QSqlDatabase &db, const QString &sql)
 {
     QSqlQuery q(db);
     return q.exec(sql);
+}
+
+static bool readSchemaSignature(QSqlDatabase &db, int &requiredCount)
+{
+    QSqlQuery q(db);
+    const QString schemaSql =
+        "SELECT COUNT(DISTINCT name) FROM sqlite_master "
+        "WHERE type='table' AND name IN ('Contact','ChatInfo','ChatRelation','Events','Messages');";
+    if (!q.exec(schemaSql) || !q.next()) return false;
+    requiredCount = q.value(0).toInt();
+    return true;
 }
 
 int main(int argc, char *argv[])
@@ -76,7 +87,9 @@ int main(int argc, char *argv[])
     input.fill('\0');
     input.clear();
 
-    if (mode != "PROBE") {
+    const bool keylessMode = (mode == "KEYLESS_PROBE");
+    const bool keyedMode = (mode == "PROBE");
+    if (!keylessMode && !keyedMode) {
         hexkey.fill(QChar('0')); hexkey.clear();
         out << QJsonDocument(fail("MODE_NOT_ALLOWED")).toJson(QJsonDocument::Compact) << Qt::endl;
         return 2;
@@ -86,7 +99,12 @@ int main(int argc, char *argv[])
         out << QJsonDocument(fail("PATH_INPUT_MISSING")).toJson(QJsonDocument::Compact) << Qt::endl;
         return 2;
     }
-    if (!QRegularExpression("^[0-9A-Fa-f]{64}$").match(hexkey).hasMatch()) {
+    if (keylessMode && !hexkey.isEmpty()) {
+        hexkey.fill(QChar('0')); hexkey.clear();
+        out << QJsonDocument(fail("KEY_MATERIAL_NOT_ALLOWED_IN_KEYLESS_MODE")).toJson(QJsonDocument::Compact) << Qt::endl;
+        return 2;
+    }
+    if (keyedMode && !QRegularExpression("^[0-9A-Fa-f]{64}$").match(hexkey).hasMatch()) {
         hexkey.fill(QChar('0')); hexkey.clear();
         out << QJsonDocument(fail("HEXKEY_INVALID_OR_MISSING")).toJson(QJsonDocument::Compact) << Qt::endl;
         return 2;
@@ -111,38 +129,36 @@ int main(int argc, char *argv[])
         if (!db.open()) {
             response = fail("DB_OPEN_FAILED");
             exitCode = 4;
+        } else if (!execControlPragma(db, "PRAGMA query_only=ON;")) {
+            response = fail("QUERY_ONLY_PRAGMA_FAILED");
+            exitCode = 5;
         } else {
-            QString pragma = "PRAGMA hexkey='" + hexkey + "';";
-            const bool keyAccepted = execControlPragma(db, pragma);
-            pragma.fill(QChar('0')); pragma.clear();
-            hexkey.fill(QChar('0')); hexkey.clear();
+            bool keyAccepted = true;
+            if (keyedMode) {
+                QString pragma = "PRAGMA hexkey='" + hexkey + "';";
+                keyAccepted = execControlPragma(db, pragma);
+                pragma.fill(QChar('0')); pragma.clear();
+                hexkey.fill(QChar('0')); hexkey.clear();
+            }
 
             if (!keyAccepted) {
                 response = fail("HEXKEY_PRAGMA_REJECTED");
                 exitCode = 5;
-            } else if (!execControlPragma(db, "PRAGMA query_only=ON;")) {
-                response = fail("QUERY_ONLY_PRAGMA_FAILED");
-                exitCode = 5;
             } else {
-                QSqlQuery q(db);
-                const QString schemaSql =
-                    "SELECT COUNT(DISTINCT name) FROM sqlite_master "
-                    "WHERE type='table' AND name IN ('Contact','ChatInfo','ChatRelation','Events','Messages');";
-                if (!q.exec(schemaSql) || !q.next()) {
-                    response = fail("CODEC_OR_KEY_NOT_VALIDATED");
+                int requiredCount = 0;
+                if (!readSchemaSignature(db, requiredCount)) {
+                    response = fail(keylessMode ? "KEYLESS_SCHEMA_NOT_READABLE" : "CODEC_OR_KEY_NOT_VALIDATED");
+                    exitCode = 6;
+                } else if (requiredCount != 5) {
+                    response = fail("SCHEMA_SIGNATURE_MISMATCH");
+                    response["requiredTableCount"] = requiredCount;
                     exitCode = 6;
                 } else {
-                    const int requiredCount = q.value(0).toInt();
-                    if (requiredCount != 5) {
-                        response = fail("SCHEMA_SIGNATURE_MISMATCH");
-                        response["requiredTableCount"] = requiredCount;
-                        exitCode = 6;
-                    } else {
-                        response = baseResult("CODEC_READ_PASS");
-                        response["schemaReadable"] = true;
-                        response["requiredTableCount"] = 5;
-                        response["driver"] = "QSQLITE";
-                    }
+                    response = baseResult(keylessMode ? "KEYLESS_CODEC_READ_PASS" : "CODEC_READ_PASS");
+                    response["schemaReadable"] = true;
+                    response["requiredTableCount"] = 5;
+                    response["driver"] = "QSQLITE";
+                    response["keyMaterialUsed"] = keyedMode;
                 }
             }
             db.close();

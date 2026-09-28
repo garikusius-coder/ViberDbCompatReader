@@ -1,3 +1,4 @@
+# V5-040 Fix8: inspect executable C++ tokens after removing comments; build the keyless reader.
 name: Build Viber DB Compatibility Reader
 
 on:
@@ -15,16 +16,13 @@ jobs:
   build-viber-reader:
     name: windows-2022 / MSVC x64 / Qt 6.10.3
     runs-on: windows-2022
-
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
-
       - name: Set up MSVC 2022 x64
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
-
       - name: Install Qt 6.10.3 MSVC 2022 x64
         uses: jurplel/install-qt-action@v4
         with:
@@ -34,56 +32,35 @@ jobs:
           arch: win64_msvc2022_64
           archives: qtbase
           cache: true
-
       - name: Verify PROBE-only source contract
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $src = Get-Content -LiteralPath '.\V5_ViberDbCompatQtReader_v5.0.cpp' -Raw
-          if ($src -notmatch 'mode != "PROBE"') { throw 'PROBE_ONLY_GUARD_MISSING' }
-          if ($src -match 'DIRECT_CHAT_RESOLVED|selectedChatId|candidateCount|directCount') { throw 'DIRECT_CHAT_CODE_PRESENT' }
-          if ($src -notmatch 'QSQLITE_OPEN_READONLY') { throw 'READONLY_OPEN_MISSING' }
-          if ($src -notmatch 'PRAGMA query_only=ON') { throw 'QUERY_ONLY_MISSING' }
-          if ($src -notmatch 'PRAGMA hexkey') { throw 'HEXKEY_RUNTIME_MISSING' }
-          if ($src -match 'ViberSend\s*\(|SendKeys|autoEnabled\s*=\s*true') { throw 'SEND_OR_AUTO_CODE_PRESENT' }
-
+          $ErrorActionPreference='Stop'
+          $src=Get-Content -LiteralPath '.\V5_ViberDbCompatQtReader_v5.0.cpp' -Raw
+          # The safety prose mentions AUTO/DIRECT_CHAT. Remove C++ comments before inspecting behavior.
+          $code=[regex]::Replace($src,'(?s)/\*.*?\*/|(?m)//[^\r\n]*','')
+          if($code -notmatch 'mode\s*==\s*"KEYLESS_PROBE"'){throw 'KEYLESS_PROBE_MODE_MISSING'}
+          if($code -notmatch 'QSQLITE_OPEN_READONLY'){throw 'READONLY_OPEN_MISSING'}
+          if($code -notmatch 'PRAGMA query_only=ON'){throw 'QUERY_ONLY_MISSING'}
+          if($code -notmatch 'if\s*\(\s*keylessMode\s*&&\s*!hexkey\.isEmpty\(\)\s*\)' -or $code -notmatch 'KEY_MATERIAL_NOT_ALLOWED_IN_KEYLESS_MODE'){throw 'KEYLESS_KEY_REJECTION_MISSING'}
+          if($code -match '(?i)\b(?:DIRECT_CHAT|DIRECT_CHAT_RESOLVED|selectedChatId|candidateCount|directCount|ViberSend|SendKeys|AUTO|OpenProcess|ReadProcessMemory|VirtualQueryEx|WriteProcessMemory|DebugActiveProcess|CreateRemoteThread)\b|\bsend\s*\('){throw 'UNSAFE_RUNTIME_CODE_PRESENT'}
       - name: Build EXE
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $qt = $env:QT_ROOT_DIR
-          if (-not $qt -or -not (Test-Path $qt)) { throw 'QT_ROOT_DIR_MISSING' }
-          $includes = @(
-            "/I$qt\include",
-            "/I$qt\include\QtCore",
-            "/I$qt\include\QtSql"
-          )
-          $libs = @(
-            "/LIBPATH:$qt\lib",
-            'Qt6Core.lib',
-            'Qt6Sql.lib'
-          )
-          & cl.exe /nologo /std:c++17 /Zc:__cplusplus /permissive- /EHsc /O2 /MD /DUNICODE /D_UNICODE /DQT_NO_DEBUG @includes `
-            '.\V5_ViberDbCompatQtReader_v5.0.cpp' `
-            /Fe:'.\V5_ViberDbCompatQtReader_v5.0.exe' `
-            /link /SUBSYSTEM:CONSOLE @libs
-          if ($LASTEXITCODE -ne 0) { throw "CL_FAILED_$LASTEXITCODE" }
-          if (-not (Test-Path '.\V5_ViberDbCompatQtReader_v5.0.exe')) { throw 'EXE_NOT_CREATED' }
-
+          $ErrorActionPreference='Stop';$qt=$env:QT_ROOT_DIR
+          if(-not$qt-or-not(Test-Path $qt)){throw 'QT_ROOT_DIR_MISSING'}
+          $includes=@("/I$qt\include","/I$qt\include\QtCore","/I$qt\include\QtSql")
+          $libs=@("/LIBPATH:$qt\lib",'Qt6Core.lib','Qt6Sql.lib')
+          & cl.exe /nologo /std:c++17 /EHsc /O2 /MD /DUNICODE /D_UNICODE /DQT_NO_DEBUG @includes '.\V5_ViberDbCompatQtReader_v5.0.cpp' /Fe:'.\V5_ViberDbCompatQtReader_v5.0.exe' /link /SUBSYSTEM:CONSOLE @libs
+          if($LASTEXITCODE-ne0){throw "CL_FAILED_$LASTEXITCODE"}
+          if(-not(Test-Path '.\V5_ViberDbCompatQtReader_v5.0.exe')){throw 'EXE_NOT_CREATED'}
       - name: Verify Windows x64 and dynamic Qt imports
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $exe = '.\V5_ViberDbCompatQtReader_v5.0.exe'
-          $headers = (& dumpbin.exe /headers $exe | Out-String)
-          if ($LASTEXITCODE -ne 0) { throw 'DUMPBIN_HEADERS_FAILED' }
-          if ($headers -notmatch '(?im)8664 machine \(x64\)|machine \(x64\)') { throw 'NOT_AMD64_PE32PLUS' }
-          $deps = (& dumpbin.exe /dependents $exe | Out-String)
-          if ($LASTEXITCODE -ne 0) { throw 'DUMPBIN_DEPENDENTS_FAILED' }
-          if ($deps -notmatch '(?im)Qt6Core\.dll') { throw 'QT6CORE_IMPORT_MISSING' }
-          if ($deps -notmatch '(?im)Qt6Sql\.dll') { throw 'QT6SQL_IMPORT_MISSING' }
-          if ($deps -match '(?im)qsqlite.*\.dll') { throw 'QSQLITE_MUST_BE_PLUGIN_NOT_LINK_IMPORT' }
-
+          $ErrorActionPreference='Stop';$exe='.\V5_ViberDbCompatQtReader_v5.0.exe'
+          $headers=(& dumpbin.exe /headers $exe|Out-String);if($LASTEXITCODE-ne0){throw'DUMPBIN_HEADERS_FAILED'};if($headers-notmatch'(?im)8664 machine \(x64\)|machine \(x64\)'){throw'NOT_AMD64_PE32PLUS'}
+          $deps=(& dumpbin.exe /dependents $exe|Out-String);if($LASTEXITCODE-ne0){throw'DUMPBIN_DEPENDENTS_FAILED'};if($deps-notmatch'(?im)Qt6Core\.dll'){throw'QT6CORE_IMPORT_MISSING'};if($deps-notmatch'(?im)Qt6Sql\.dll'){throw'QT6SQL_IMPORT_MISSING'};if($deps-match'(?im)qsqlite.*\.dll'){throw'QSQLITE_MUST_BE_PLUGIN_NOT_LINK_IMPORT'}
+          (Get-FileHash -Algorithm SHA256 $exe).Hash | ForEach-Object { Write-Host "EXE_SHA256=$_" }
       - name: Upload EXE only
         uses: actions/upload-artifact@v4
         with:
